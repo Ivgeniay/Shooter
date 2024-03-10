@@ -8,8 +8,9 @@ namespace CodeBase.Multiplayer
 {
     public class MultiplayerManager : ColyseusManager<MultiplayerManager>
     {
-        [SerializeField] private GameObject _playerPrefab;
+        [SerializeField] private PlayerCharacter _playerPrefab;
         [SerializeField] private EnemyController _enemyPrefab;
+        private Dictionary<string, EnemyController> _enemies = new Dictionary<string, EnemyController>();
 
         private ColyseusRoom<State> _room;
 
@@ -22,13 +23,20 @@ namespace CodeBase.Multiplayer
 
         private async void Connect()
         {
-            _room = await Instance.client.JoinOrCreate<State>("state_handler");
+            Dictionary<string, object> options = new Dictionary<string, object>
+            {
+                { "speed", _playerPrefab.Speed }
+            };
+
+            _room = await Instance.client.JoinOrCreate<State>("state_handler", options);
             _room.OnStateChange += OnStateChangeHandler;
-        } 
+            _room.OnMessage<string>("Shoot", OnApplyShootHandler);
+        }
+
         private void OnStateChangeHandler(State state, bool isFirstState)
         {
-            if (!isFirstState) return;
-             
+            _room.OnStateChange -= OnStateChangeHandler;
+
             state.players.ForEach((key, player) =>
             {
                 if (key == _room.SessionId) CreatePlayer(player); 
@@ -36,24 +44,45 @@ namespace CodeBase.Multiplayer
             });
 
             _room.State.players.OnAdd += OnPlayerAdd;
-            _room.State.players.OnRemove += RemoveEnemy;
+            _room.State.players.OnRemove += OnRemovePlayer;
         } 
         private void OnPlayerAdd(string key, Player value)
         {
             CreateEnemy(key, value);
         } 
-        private void RemoveEnemy(string key, Player value)
+        private void OnRemovePlayer(string key, Player value)
         {
+            if (_enemies.ContainsKey(key) == false)
+                return;
 
+            EnemyController enemy = _enemies[key];
+            enemy.Destroy();
+
+            _enemies.Remove(key);
         }
 
         private void CreatePlayer(Player player) =>
-            Instantiate(_playerPrefab, new Vector3(player.x, 0, player.y), Quaternion.identity); 
+            Instantiate(_playerPrefab, new Vector3(player.pX, player.pY, player.pZ), Quaternion.identity); 
 
         private void CreateEnemy(string key, Player player)
         {
-            EnemyController enemy = Instantiate(_enemyPrefab, new Vector3(player.x, 0, player.y), Quaternion.identity);
-            player.OnChange += enemy.OnChange;
+            EnemyController enemy = Instantiate(_enemyPrefab, new Vector3(player.pX, player.pY, player.pZ), Quaternion.identity);
+            enemy.Init(player);
+
+            _enemies.Add(key, enemy);
+        }
+
+        private void OnApplyShootHandler(string jsonShootInfo)
+        {
+            ShootInfo shootInfo = JsonUtility.FromJson<ShootInfo>(jsonShootInfo);
+
+            if (_enemies.ContainsKey(shootInfo.key) == false)
+            {
+                Debug.LogError($"Id {shootInfo.key} does not exist.");
+                return;
+            }
+
+            _enemies[shootInfo.key].Shoot(shootInfo);
         }
 
         protected override void OnDestroy()
@@ -66,11 +95,15 @@ namespace CodeBase.Multiplayer
         {
             _room.Send(header, data);
         }
-    }
 
-    public class Room
-    {
-        public float Score;
-        public float Time;
+        internal void SendMessage(string header, string data)
+        {
+            _room.Send(header, data);
+        }
+
+        internal string GetSessionID()
+        {
+            return _room.SessionId;
+        }
     }
 }
